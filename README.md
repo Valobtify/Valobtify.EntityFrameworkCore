@@ -7,7 +7,8 @@ With this package, you can automatically configure your single-value objects for
   ```
 
 
-### 2. Setup single value objects
+### 2. Setup single value objects 
+In your DbContext, override the OnModelCreating method as shown in the following code.
  ```csharp
 protected override void OnModelCreating(ModelBuilder modelBuilder)
 {
