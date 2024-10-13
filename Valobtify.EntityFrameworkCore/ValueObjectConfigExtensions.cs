@@ -1,14 +1,17 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System.ComponentModel.DataAnnotations;
-using System.Linq.Expressions;
 using System.Reflection;
 
 namespace Valobtify.EntityFrameworkCore;
 
 public static class ValueObjectConfigExtensions
 {
+    static readonly Template _template = Template.Create("").Content!;
+    static readonly PropertyConvertor convertor = new();
+
     public static ModelBuilder SetupSingleValueObjects(this ModelBuilder modelBuilder)
     {
         var entityTypes = modelBuilder.Model
@@ -20,7 +23,7 @@ public static class ValueObjectConfigExtensions
                 .GetProperties().ToList()
                 .GetValueObjectTypeProperties();
 
-            modelBuilder.MapValueObjectDataAnnotations(entityType, properties);
+            modelBuilder.ApplyMaxLength(entityType, properties);
 
             modelBuilder.SetupSingleValueObjectConversions(entityType, properties);
         }
@@ -28,16 +31,16 @@ public static class ValueObjectConfigExtensions
         return modelBuilder;
     }
 
-    static ModelBuilder MapValueObjectDataAnnotations(
-        this ModelBuilder modelBuilder,
-        IMutableEntityType entityType,
-        List<PropertyInfo> properties)
+    static ModelBuilder ApplyMaxLength(
+         this ModelBuilder modelBuilder,
+         IMutableEntityType entityType,
+         List<PropertyInfo> properties)
     {
         foreach (PropertyInfo property in properties)
         {
             var maxLength = property.PropertyType
-                        .GetProperty(nameof(SingleValueObject<string>.Value))!
-                        .GetCustomAttribute<MaxLengthAttribute>()?.Length;
+                .GetProperty(nameof(_template.Value))!
+                .GetCustomAttribute<MaxLengthAttribute>()?.Length;
 
             if (maxLength is not null)
             {
@@ -57,54 +60,39 @@ public static class ValueObjectConfigExtensions
     {
         foreach (var property in properties)
         {
+            // generate modelBuilder.Entity<Entity>()
             var entityMethod = modelBuilder
                 .GetType()
                 .GetMethods()
                 .Single(m =>
-                m.IsGenericMethod &&
-                m.IsPublic &&
-                !m.IsStatic &&
-                m.Name is nameof(modelBuilder.Entity) &&
-                m.GetParameters().Length == 0)
+                    m.IsGenericMethod &&
+                    m.IsPublic &&
+                    !m.IsStatic &&
+                    m.Name is nameof(modelBuilder.Entity) &&
+                    m.GetParameters().Length == 0)
                 .MakeGenericMethod(entityType.ClrType);
             var entityConfig = entityMethod.Invoke(modelBuilder, null);
 
+            // generate modelBuilder.Entity<Entity>().Property()
             var propertyMethod = entityConfig?
                 .GetType()
                 .GetMethods()
                 .Single(m =>
-                m.Name is nameof(EntityTypeBuilder.Property) &&
-                m.IsGenericMethod &&
-                m.GetParameters().Length is 1 &&
-                m.GetParameters().First().ParameterType == typeof(string))
+                    m.Name is nameof(EntityTypeBuilder.Property) &&
+                    m.IsGenericMethod &&
+                    m.GetParameters().Length is 1 &&
+                    m.GetParameters().First().ParameterType == typeof(string))
                 .MakeGenericMethod(property.PropertyType);
+
             var propertyConfig = propertyMethod?.Invoke(entityConfig, [property.Name]);
 
-            var valueType = property.PropertyType.GetProperty(nameof(SingleValueObject<string>.Value))!.PropertyType;
+            var applyConversionMethod = typeof(ValueObjectConfigExtensions)
+                .GetMethod(nameof(ApplyConversion))!
+                .MakeGenericMethod(
+                    property.PropertyType,
+                    property.PropertyType.GetProperty(nameof(_template.Value))!.PropertyType);
 
-            var hasConversionMethod = propertyConfig?
-                .GetType()
-                .GetMethods()
-                .Single(m =>
-                m.Name is nameof(PropertyBuilder.HasConversion) &&
-                m.IsPublic &&
-                m.GetParameters().Length is 2 &&
-                m.GetParameters().First().Name is "convertToProviderExpression")
-                .MakeGenericMethod(valueType);
-
-            var convertToProviderType = typeof(ValueObjectConfigExtensions)
-                .GetMethod(nameof(ConvertToProvider))!
-                .MakeGenericMethod(valueType, property.PropertyType);
-
-            var convertFromProviderType = typeof(ValueObjectConfigExtensions)
-                .GetMethod(nameof(ConvertFromProvider))!
-                .MakeGenericMethod(property.PropertyType, valueType);
-
-            hasConversionMethod!.Invoke(propertyConfig,
-                [
-                    convertToProviderType.Invoke(null, null),
-                    convertFromProviderType.Invoke(null, null)
-                ]);
+            applyConversionMethod.Invoke(null, [propertyConfig]);
         }
 
         return modelBuilder;
@@ -120,7 +108,7 @@ public static class ValueObjectConfigExtensions
 
             if (propertyBaseType?.IsGenericType is not true) continue;
 
-            if (propertyBaseType.GetGenericTypeDefinition() != typeof(SingleValueObject<>)) continue;
+            if (propertyBaseType.GetGenericTypeDefinition() != typeof(SingleValueObject<,>)) continue;
 
             valueObjectTypeProperties.Add(property);
         }
@@ -128,15 +116,12 @@ public static class ValueObjectConfigExtensions
         return valueObjectTypeProperties;
     }
 
-    public static Expression<Func<TValueObject, TValue?>> ConvertToProvider<TValue, TValueObject>()
-          where TValueObject : SingleValueObject<TValue>, new()
+    public static void ApplyConversion<TSingleValueObject, TValue>(this PropertyBuilder<TSingleValueObject> builder)
+       where TSingleValueObject : SingleValueObject<TSingleValueObject, TValue>, ICreatableValueObject<TSingleValueObject, TValue>
+       where TValue : notnull
     {
-        return c => c.Value;
-    }
-
-    public static Expression<Func<TValue?, TValueObject>> ConvertFromProvider<TValueObject, TValue>()
-           where TValueObject : SingleValueObject<TValue>, new()
-    {
-        return c => new TValueObject() { Value = c! };
+        builder.HasConversion(
+            valueObject => valueObject.Value,
+            content => convertor.Convert<TSingleValueObject, TValue>(content));
     }
 }
