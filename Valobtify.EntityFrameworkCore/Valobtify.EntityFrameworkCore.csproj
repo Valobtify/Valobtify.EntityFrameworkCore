@@ -10,7 +10,7 @@
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<RepositoryUrl>https://github.com/Valobtify/Valobtify.EntityFrameworkCore</RepositoryUrl>
 		<PackageIcon>ValobtifyIcon.png</PackageIcon>
-		<Version>2.0.1</Version>
+		<Version>2.0.2</Version>
 	</PropertyGroup>
 
 	<ItemGroup>
